@@ -1,0 +1,28 @@
+[Unit]
+Description=Deploymate Runtime Agent
+Documentation=https://docs.deploymate.io
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=deploymate
+Group=deploymate
+WorkingDirectory=/opt/deploymate-agent
+EnvironmentFile=/opt/deploymate-agent/.env
+ExecStart=/usr/bin/node /opt/deploymate-agent/dist/index.js
+Restart=always
+RestartSec=5
+RestartPreventExitStatus=1
+StartLimitInterval=200
+StartLimitBurst=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=deploymate-agent
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/tmp/deploymate-agent /var/log/deploymate-agent
+PrivateTmp=no
+
+[Install]
+WantedBy=multi-user.target
