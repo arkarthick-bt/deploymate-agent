@@ -82,10 +82,54 @@ export type AgentMessage =
       containerId?: string;
       containerName?: string;
       error?: string;
+    }
+  | {
+      type: 'db:result';
+      jobId: string;
+      success: boolean;
+      data?: Record<string, unknown>;
+      error?: string;
     };
+
+// ---------------------------------------------------------------------------
+// Database job types
+// ---------------------------------------------------------------------------
+
+export type DbJobType =
+  | 'VALIDATE_DATABASE'
+  | 'LIST_DATABASE_USERS'
+  | 'LIST_DATABASES'
+  | 'LIST_SCHEMAS'
+  | 'CREATE_DATABASE_USER'
+  | 'REVOKE_DATABASE_USER'
+  | 'GRANT_DATABASE_ACCESS'
+  | 'REVOKE_DATABASE_ACCESS'
+  | 'ROTATE_DATABASE_PASSWORD'
+  | 'LIST_PERMISSIONS';
+
+export interface DbConnection {
+  engine: 'mysql' | 'postgresql' | 'mariadb';
+  host: string;
+  port: number;
+  database: string;
+  username: string;
+  password: string;
+  sslEnabled: boolean;
+}
+
+export interface DbJobPayload {
+  jobType: DbJobType;
+  connection: DbConnection;
+  dbUsername?: string;
+  dbPassword?: string;
+  accessTemplate?: string;
+  targetDatabase?: string;
+  targetSchema?: string;
+}
 
 // Backend → Agent
 export type BackendMessage =
   | { type: 'deployment:dispatch'; job: DeploymentJob }
   | { type: 'deployment:rollback'; deploymentId: string; containerId: string }
+  | { type: 'db:job'; jobId: string; jobType: DbJobType; payload: DbJobPayload }
   | { type: 'ping' };
