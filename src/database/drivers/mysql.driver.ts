@@ -7,6 +7,7 @@ import type {
   DbDatabaseInfo,
   DbSchemaInfo,
   DbPermissionInfo,
+  UserGrantSummary,
 } from '../driver.interface';
 
 // ---------------------------------------------------------------------------
@@ -14,10 +15,10 @@ import type {
 // ---------------------------------------------------------------------------
 
 const TEMPLATE_GRANTS: Record<string, string> = {
-  READ_ONLY:  'SELECT',
+  READ_ONLY: 'SELECT',
   READ_WRITE: 'SELECT, INSERT, UPDATE, DELETE',
-  ADMIN:      'ALL PRIVILEGES',
-  MIGRATION:  'SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX',
+  ADMIN: 'ALL PRIVILEGES',
+  MIGRATION: 'SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX',
 };
 
 async function withConnection<T>(
@@ -37,7 +38,7 @@ async function withConnection<T>(
   try {
     return await fn(conn);
   } finally {
-    await conn.end().catch(() => {});
+    await conn.end().catch(() => { });
   }
 }
 
@@ -46,7 +47,7 @@ export class MySQLDriver implements DatabaseDriver {
     const start = Date.now();
     return withConnection(connection, async (conn) => {
       const [[versionRow]] = await conn.execute('SELECT VERSION() AS version') as any;
-      const [[userRow]] = await conn.execute('SELECT CURRENT_USER() AS current_user') as any;
+      const [[userRow]] = await conn.execute('SELECT CURRENT_USER() AS `current_user`') as any;
       const [[sslRow]] = await conn.execute("SHOW STATUS LIKE 'Ssl_cipher'") as any;
       const [databases] = await conn.execute(
         'SHOW DATABASES',
@@ -168,6 +169,58 @@ export class MySQLDriver implements DatabaseDriver {
     return withConnection(connection, async (conn) => {
       await conn.execute(`REVOKE ALL PRIVILEGES ON \`${db}\`.* FROM ?@'%'`, [username]);
       await conn.execute('FLUSH PRIVILEGES');
+    });
+  }
+
+  async getAccessSummary(connection: DbConnection): Promise<UserGrantSummary[]> {
+    return withConnection(connection, async (conn) => {
+      // Schema-level grants (most common: GRANT SELECT ON db.*)
+      const [schemaRows] = await conn.execute(`
+        SELECT
+          REPLACE(GRANTEE, '\\'', '')              AS raw_grantee,
+          SUBSTRING_INDEX(REPLACE(GRANTEE, '\\'', ''), '@', 1) AS username,
+          SUBSTRING_INDEX(REPLACE(GRANTEE, '\\'', ''), '@', -1) AS host,
+          TABLE_SCHEMA                              AS scope,
+          GROUP_CONCAT(DISTINCT PRIVILEGE_TYPE)     AS privileges
+        FROM information_schema.SCHEMA_PRIVILEGES
+        WHERE TABLE_SCHEMA NOT IN ('mysql','information_schema','performance_schema','sys')
+          AND GRANTEE NOT IN (
+            "'mysql.sys'@'localhost'",
+            "'mysql.session'@'localhost'",
+            "'mysql.infoschema'@'localhost'"
+          )
+        GROUP BY raw_grantee, username, host, TABLE_SCHEMA
+        ORDER BY username, TABLE_SCHEMA
+      `) as any;
+
+      // All login users (for users with no schema grants)
+      const [userRows] = await conn.execute(
+        `SELECT User AS username, Host AS host FROM mysql.user WHERE account_locked = 'N' ORDER BY User`,
+      ) as any;
+
+      const map = new Map<string, UserGrantSummary>();
+
+      // Seed with all users first
+      for (const row of userRows as any[]) {
+        const key = `${row.username}@${row.host}`;
+        if (!map.has(key)) {
+          map.set(key, { username: row.username as string, host: row.host as string, grants: [] });
+        }
+      }
+
+      // Layer in schema grants
+      for (const row of schemaRows as any[]) {
+        const key = `${row.username}@${row.host}`;
+        if (!map.has(key)) {
+          map.set(key, { username: row.username as string, host: row.host as string, grants: [] });
+        }
+        const privs: string[] = (row.privileges as string ?? '').split(',').map((p: string) => p.trim()).filter(Boolean);
+        if (privs.length > 0) {
+          map.get(key)!.grants.push({ scope: row.scope as string, privileges: privs });
+        }
+      }
+
+      return Array.from(map.values());
     });
   }
 

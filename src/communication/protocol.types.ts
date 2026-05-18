@@ -105,7 +105,8 @@ export type DbJobType =
   | 'GRANT_DATABASE_ACCESS'
   | 'REVOKE_DATABASE_ACCESS'
   | 'ROTATE_DATABASE_PASSWORD'
-  | 'LIST_PERMISSIONS';
+  | 'LIST_PERMISSIONS'
+  | 'SYNC_DATABASE_ACCESS';
 
 export interface DbConnection {
   engine: 'mysql' | 'postgresql' | 'mariadb';

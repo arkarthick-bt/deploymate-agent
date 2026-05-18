@@ -34,6 +34,17 @@ export interface ValidationResult {
   schemas?: string[];
 }
 
+export interface UserGrantSummary {
+  username: string;
+  host?: string;
+  /** One entry per (schema or database) scope that has explicit grants */
+  grants: Array<{
+    /** Schema name (PostgreSQL) or database name (MySQL/MariaDB) */
+    scope: string;
+    privileges: string[];
+  }>;
+}
+
 /**
  * Adapter interface every database driver must implement.
  * All methods receive the connection details and return structured data.
@@ -91,4 +102,10 @@ export interface DatabaseDriver {
 
   /** Change the password of the admin/connection user. */
   rotatePassword(connection: DbConnection, newPassword: string): Promise<void>;
+
+  /**
+   * Returns a single-query snapshot of all users and their grant scopes.
+   * Used by the sync flow to reconcile live DB state into tracked tables.
+   */
+  getAccessSummary(connection: DbConnection): Promise<UserGrantSummary[]>;
 }

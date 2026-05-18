@@ -107,6 +107,11 @@ export async function handleDbJob(payload: DbJobPayload): Promise<DbHandlerResul
         return { success: true, data: { rotated: true } };
       }
 
+      case 'SYNC_DATABASE_ACCESS': {
+        const summary = await driver.getAccessSummary(connection);
+        return { success: true, data: { users: summary as unknown as Record<string, unknown>[] } as unknown as Record<string, unknown> };
+      }
+
       default:
         throw new Error(`Unknown job type: ${jobType}`);
     }

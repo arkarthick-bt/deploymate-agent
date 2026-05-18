@@ -7,6 +7,7 @@ import type {
   DbDatabaseInfo,
   DbSchemaInfo,
   DbPermissionInfo,
+  UserGrantSummary,
 } from '../driver.interface';
 
 // ---------------------------------------------------------------------------
@@ -185,6 +186,49 @@ export class PostgreSQLDriver implements DatabaseDriver {
     }
     return withClient(connection, async (client) => {
       await client.query(`ALTER USER "${username}" WITH PASSWORD $1`, [newPassword]);
+    });
+  }
+
+  async getAccessSummary(connection: DbConnection): Promise<UserGrantSummary[]> {
+    return withClient(connection, async (client) => {
+      // Per-user, per-schema privilege aggregation.
+      // Excludes superusers and internal pg_ roles.
+      const result = await client.query(`
+        SELECT
+          g.grantee                            AS username,
+          g.table_schema                       AS scope,
+          array_agg(DISTINCT g.privilege_type) AS privileges
+        FROM information_schema.role_table_grants g
+        JOIN pg_roles r ON r.rolname = g.grantee
+        WHERE r.rolcanlogin = true
+          AND r.rolsuper    = false
+          AND g.grantee NOT LIKE 'pg_%'
+        GROUP BY g.grantee, g.table_schema
+        ORDER BY g.grantee, g.table_schema
+      `);
+
+      // Group rows by username
+      const map = new Map<string, UserGrantSummary>();
+      for (const row of result.rows as any[]) {
+        const username = row.username as string;
+        if (!map.has(username)) map.set(username, { username, grants: [] });
+        const privs: string[] = Array.isArray(row.privileges) ? row.privileges : [];
+        if (privs.length > 0) {
+          map.get(username)!.grants.push({ scope: row.scope as string, privileges: privs });
+        }
+      }
+
+      // Also include users that have no table grants (login roles with no grants yet)
+      const loginRoles = await client.query(
+        `SELECT rolname AS username FROM pg_roles WHERE rolcanlogin = true AND rolsuper = false AND rolname NOT LIKE 'pg_%' ORDER BY rolname`,
+      );
+      for (const row of loginRoles.rows as any[]) {
+        if (!map.has(row.username as string)) {
+          map.set(row.username as string, { username: row.username as string, grants: [] });
+        }
+      }
+
+      return Array.from(map.values());
     });
   }
 
