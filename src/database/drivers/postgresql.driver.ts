@@ -129,8 +129,9 @@ export class PostgreSQLDriver implements DatabaseDriver {
       throw new Error('Invalid PostgreSQL username');
     }
     return withClient(connection, async (client) => {
-      // Create role
-      await client.query(`CREATE USER "${username}" WITH PASSWORD $1`, [password]);
+      // DDL does not support parameterized placeholders — escape single quotes manually
+      const safePwd = password.replace(/'/g, "''");
+      await client.query(`CREATE USER "${username}" WITH PASSWORD '${safePwd}'`);
       await this._applyGrants(client, username, template, targetSchema);
     });
   }
@@ -185,7 +186,8 @@ export class PostgreSQLDriver implements DatabaseDriver {
       throw new Error('Invalid PostgreSQL username');
     }
     return withClient(connection, async (client) => {
-      await client.query(`ALTER USER "${username}" WITH PASSWORD $1`, [newPassword]);
+      const safePwd = newPassword.replace(/'/g, "''");
+      await client.query(`ALTER USER "${username}" WITH PASSWORD '${safePwd}'`);
     });
   }
 
