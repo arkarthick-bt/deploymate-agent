@@ -141,10 +141,24 @@ export class PostgreSQLDriver implements DatabaseDriver {
       throw new Error('Invalid PostgreSQL username');
     }
     return withClient(connection, async (client) => {
-      // Revoke all privileges first to avoid dependency errors
-      await client.query(`REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM "${username}"`).catch(() => {});
-      await client.query(`REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM "${username}"`).catch(() => {});
-      await client.query(`REVOKE CONNECT ON DATABASE "${connection.database}" FROM "${username}"`).catch(() => {});
+      // 1. Kill any active connections held by this user so DROP USER doesn't get
+      //    a 2BP01 "dependent objects still exist" from open sessions.
+      await client.query(
+        `SELECT pg_terminate_backend(pid)
+           FROM pg_stat_activity
+          WHERE usename = $1
+            AND pid <> pg_backend_pid()`,
+        [username],
+      ).catch(() => {});
+
+      // 2. Reassign any objects owned by the role to the connection owner, then
+      //    drop all owned objects/privileges across every schema in one shot.
+      //    REASSIGN OWNED + DROP OWNED are the only commands that reliably clear
+      //    cross-schema ownership and default privileges (2BP01 root cause).
+      await client.query(`REASSIGN OWNED BY "${username}" TO "${connection.username}"`).catch(() => {});
+      await client.query(`DROP OWNED BY "${username}"`).catch(() => {});
+
+      // 3. Now the role has no objects or privileges — safe to drop.
       await client.query(`DROP USER IF EXISTS "${username}"`);
     });
   }
