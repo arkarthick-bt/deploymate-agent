@@ -138,6 +138,7 @@ export class PostgreSQLDriver implements DatabaseDriver {
       await client.query(`CREATE USER "${username}" WITH PASSWORD '${safePwd}'`);
 
       if (isCrossDb) {
+        await this._hardenConnectionDatabase(client, connection.username);
         // CONNECT is a server-level privilege — can be granted from any database connection
         const privs = TEMPLATE_GRANTS[template] ?? TEMPLATE_GRANTS['READ_ONLY']!;
         if (privs.includes('CONNECT')) {
@@ -199,14 +200,12 @@ export class PostgreSQLDriver implements DatabaseDriver {
 
     if (isCrossDb) {
       await withClient(connection, async (client) => {
+        await this._hardenConnectionDatabase(client, connection.username);
         const privs = TEMPLATE_GRANTS[template] ?? TEMPLATE_GRANTS['READ_ONLY']!;
         if (privs.includes('CONNECT')) {
           await client.query(`GRANT CONNECT ON DATABASE "${effectiveTarget}" TO "${username}"`);
         }
-        // Strip any residual grants on the connection (admin) database — users should
-        // only touch the target database, not the admin one
         await client.query(`REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA "${targetSchema ?? 'public'}" FROM "${username}"`).catch(() => {});
-        await client.query(`REVOKE CONNECT ON DATABASE "${connection.database}" FROM "${username}"`).catch(() => {});
       });
       await withClient({ ...connection, database: effectiveTarget }, async (client) => {
         await this._applySchemaGrants(client, username, template, targetSchema);
@@ -239,11 +238,11 @@ export class PostgreSQLDriver implements DatabaseDriver {
         await client.query(`REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA "${schema}" FROM "${username}"`);
         await client.query(`REVOKE USAGE ON SCHEMA "${schema}" FROM "${username}"`);
       });
-      // Clean up from the connection (admin) database too — the old code granted here
-      // because targetDatabase was previously unused, and users inherit PUBLIC's CONNECT
       await withClient(connection, async (client) => {
+        // Harden the admin database so no provisioned user can reach it via PUBLIC
+        await this._hardenConnectionDatabase(client, connection.username);
+        // Revoke CONNECT on the target database and clean up any residual admin DB grants
         await client.query(`REVOKE CONNECT ON DATABASE "${effectiveTarget}" FROM "${username}"`);
-        await client.query(`REVOKE CONNECT ON DATABASE "${connection.database}" FROM "${username}"`).catch(() => {});
         await client.query(`REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA "${schema}" FROM "${username}"`);
         await client.query(`REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA "${schema}" FROM "${username}"`);
         await client.query(`REVOKE USAGE ON SCHEMA "${schema}" FROM "${username}"`);
@@ -307,6 +306,14 @@ export class PostgreSQLDriver implements DatabaseDriver {
 
       return Array.from(map.values());
     });
+  }
+
+  // Strips PUBLIC's default CONNECT from the admin database so provisioned users cannot
+  // reach it via the inherited role. Re-grants CONNECT explicitly to the admin user so
+  // their access is unaffected. Idempotent — safe to call on every cross-DB operation.
+  private async _hardenConnectionDatabase(client: Client, adminUsername: string): Promise<void> {
+    await client.query(`REVOKE CONNECT ON DATABASE "${client.database}" FROM PUBLIC`);
+    await client.query(`GRANT CONNECT ON DATABASE "${client.database}" TO "${adminUsername}"`);
   }
 
   private async _applyGrants(
