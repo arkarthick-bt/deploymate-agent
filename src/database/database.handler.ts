@@ -8,8 +8,8 @@ import { mariadbDriver } from './drivers/mariadb.driver';
 function getDriver(engine: DbConnection['engine']): DatabaseDriver {
   switch (engine) {
     case 'postgresql': return postgresqlDriver;
-    case 'mysql':      return mysqlDriver;
-    case 'mariadb':    return mariadbDriver;
+    case 'mysql': return mysqlDriver;
+    case 'mariadb': return mariadbDriver;
     default:
       throw new Error(`Unsupported database engine: ${engine}`);
   }
@@ -29,6 +29,11 @@ export async function handleDbJob(payload: DbJobPayload): Promise<DbHandlerResul
   const { jobType, connection } = payload;
   const driver = getDriver(connection.engine);
 
+  console.log({
+    jobType,
+    connection,
+    payload
+  })
   try {
     switch (jobType) {
       case 'VALIDATE_DATABASE': {
@@ -86,6 +91,7 @@ export async function handleDbJob(payload: DbJobPayload): Promise<DbHandlerResul
           payload.targetDatabase,
           payload.targetSchema,
         );
+
         return { success: true, data: { granted: payload.dbUsername } };
       }
 

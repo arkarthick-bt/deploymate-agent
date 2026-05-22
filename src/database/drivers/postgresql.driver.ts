@@ -128,12 +128,32 @@ export class PostgreSQLDriver implements DatabaseDriver {
     if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/.test(username)) {
       throw new Error('Invalid PostgreSQL username');
     }
-    return withClient(connection, async (client) => {
-      // DDL does not support parameterized placeholders — escape single quotes manually
+
+    const effectiveTarget = targetDatabase ?? connection.database;
+    const isCrossDb = effectiveTarget !== connection.database;
+
+    // DDL does not support parameterized placeholders — escape single quotes manually
+    await withClient(connection, async (client) => {
       const safePwd = password.replace(/'/g, "''");
       await client.query(`CREATE USER "${username}" WITH PASSWORD '${safePwd}'`);
-      await this._applyGrants(client, username, template, targetSchema);
+
+      if (isCrossDb) {
+        // CONNECT is a server-level privilege — can be granted from any database connection
+        const privs = TEMPLATE_GRANTS[template] ?? TEMPLATE_GRANTS['READ_ONLY']!;
+        if (privs.includes('CONNECT')) {
+          await client.query(`GRANT CONNECT ON DATABASE "${effectiveTarget}" TO "${username}"`);
+        }
+      } else {
+        await this._applyGrants(client, username, template, targetSchema);
+      }
     });
+
+    if (isCrossDb) {
+      // Table/schema grants must be applied while connected TO the target database
+      await withClient({ ...connection, database: effectiveTarget }, async (client) => {
+        await this._applySchemaGrants(client, username, template, targetSchema);
+      });
+    }
   }
 
   async revokeUser(connection: DbConnection, username: string): Promise<void> {
@@ -167,31 +187,72 @@ export class PostgreSQLDriver implements DatabaseDriver {
     connection: DbConnection,
     username: string,
     template: string,
-    _targetDatabase?: string,
+    targetDatabase?: string,
     targetSchema?: string,
   ): Promise<void> {
     if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/.test(username)) {
       throw new Error('Invalid PostgreSQL username');
     }
-    return withClient(connection, async (client) => {
-      await this._applyGrants(client, username, template, targetSchema);
-    });
+
+    const effectiveTarget = targetDatabase ?? connection.database;
+    const isCrossDb = effectiveTarget !== connection.database;
+
+    if (isCrossDb) {
+      await withClient(connection, async (client) => {
+        const privs = TEMPLATE_GRANTS[template] ?? TEMPLATE_GRANTS['READ_ONLY']!;
+        if (privs.includes('CONNECT')) {
+          await client.query(`GRANT CONNECT ON DATABASE "${effectiveTarget}" TO "${username}"`);
+        }
+        // Strip any residual grants on the connection (admin) database — users should
+        // only touch the target database, not the admin one
+        await client.query(`REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA "${targetSchema ?? 'public'}" FROM "${username}"`).catch(() => {});
+        await client.query(`REVOKE CONNECT ON DATABASE "${connection.database}" FROM "${username}"`).catch(() => {});
+      });
+      await withClient({ ...connection, database: effectiveTarget }, async (client) => {
+        await this._applySchemaGrants(client, username, template, targetSchema);
+      });
+    } else {
+      await withClient(connection, async (client) => {
+        await this._applyGrants(client, username, template, targetSchema);
+      });
+    }
   }
 
   async revokeAccess(
     connection: DbConnection,
     username: string,
     _template: string,
-    _targetDatabase?: string,
+    targetDatabase?: string,
     targetSchema?: string,
   ): Promise<void> {
     if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/.test(username)) {
       throw new Error('Invalid PostgreSQL username');
     }
     const schema = targetSchema ?? 'public';
-    return withClient(connection, async (client) => {
-      await client.query(`REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA "${schema}" FROM "${username}"`);
-    });
+    const effectiveTarget = targetDatabase ?? connection.database;
+    const isCrossDb = effectiveTarget !== connection.database;
+
+    if (isCrossDb) {
+      // Revoke table/schema grants from the target database
+      await withClient({ ...connection, database: effectiveTarget }, async (client) => {
+        await client.query(`REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA "${schema}" FROM "${username}"`);
+        await client.query(`REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA "${schema}" FROM "${username}"`);
+        await client.query(`REVOKE USAGE ON SCHEMA "${schema}" FROM "${username}"`);
+      });
+      // Clean up from the connection (admin) database too — the old code granted here
+      // because targetDatabase was previously unused, and users inherit PUBLIC's CONNECT
+      await withClient(connection, async (client) => {
+        await client.query(`REVOKE CONNECT ON DATABASE "${effectiveTarget}" FROM "${username}"`);
+        await client.query(`REVOKE CONNECT ON DATABASE "${connection.database}" FROM "${username}"`).catch(() => {});
+        await client.query(`REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA "${schema}" FROM "${username}"`);
+        await client.query(`REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA "${schema}" FROM "${username}"`);
+        await client.query(`REVOKE USAGE ON SCHEMA "${schema}" FROM "${username}"`);
+      });
+    } else {
+      await withClient(connection, async (client) => {
+        await client.query(`REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA "${schema}" FROM "${username}"`);
+      });
+    }
   }
 
   async rotatePassword(connection: DbConnection, newPassword: string): Promise<void> {
@@ -254,12 +315,23 @@ export class PostgreSQLDriver implements DatabaseDriver {
     template: string,
     targetSchema?: string,
   ): Promise<void> {
-    const schema = targetSchema ?? 'public';
     const privs = TEMPLATE_GRANTS[template] ?? TEMPLATE_GRANTS['READ_ONLY']!;
-
     if (privs.includes('CONNECT')) {
       await client.query(`GRANT CONNECT ON DATABASE "${client.database}" TO "${username}"`);
     }
+    await this._applySchemaGrants(client, username, template, targetSchema);
+  }
+
+  // Schema/table-level grants only — no CONNECT. Used when connected directly to the target DB.
+  private async _applySchemaGrants(
+    client: Client,
+    username: string,
+    template: string,
+    targetSchema?: string,
+  ): Promise<void> {
+    const schema = targetSchema ?? 'public';
+    const privs = TEMPLATE_GRANTS[template] ?? TEMPLATE_GRANTS['READ_ONLY']!;
+
     if (privs.includes('ALL PRIVILEGES')) {
       await client.query(`GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA "${schema}" TO "${username}"`);
       await client.query(`GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA "${schema}" TO "${username}"`);
