@@ -135,14 +135,61 @@ install_agent() {
   # Add agent user to docker group
   usermod -aG docker "$AGENT_USER" || true
 
-  # Create directories
+  # Create runtime directories
   mkdir -p "$AGENT_DIR" "/tmp/deploymate-agent/workspaces" "/var/log/$SERVICE_NAME"
-  chown -R "$AGENT_USER:$AGENT_USER" "$AGENT_DIR" "/tmp/deploymate-agent" "/var/log/$SERVICE_NAME"
 
-  # Install from npm or local (in dev, skip)
-  # In production: npm install -g @deploymate/agent@latest
-  # For now just ensure the directory structure
-  info "Agent directory created at $AGENT_DIR"
+  # Resolve the repo root (the directory containing this script's parent)
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local repo_root
+  repo_root="$(cd "$script_dir/.." && pwd)"
+
+  if [[ -f "$repo_root/src/index.ts" ]]; then
+    # ── Source mode: running from a git clone ─────────────────────────────
+    info "Source code detected at $repo_root — building from source..."
+
+    # Install all deps (including dev) for the build
+    (cd "$repo_root" && npm ci --quiet)
+
+    # Compile TypeScript and rewrite @/ path aliases
+    (cd "$repo_root" && npm run build)
+
+    # Swap to production-only deps for the installed copy
+    (cd "$repo_root" && npm ci --omit=dev --quiet --ignore-scripts)
+
+    # Copy built artifacts to AGENT_DIR
+    rm -rf "$AGENT_DIR/dist" "$AGENT_DIR/node_modules"
+    cp -r "$repo_root/dist"         "$AGENT_DIR/dist"
+    cp -r "$repo_root/node_modules" "$AGENT_DIR/node_modules"
+    cp    "$repo_root/package.json" "$AGENT_DIR/package.json"
+
+    # Restore full dev deps in the repo so local development still works
+    (cd "$repo_root" && npm ci --quiet)
+
+  elif [[ -n "${RELEASE_URL:-}" ]]; then
+    # ── Tarball mode: download a pre-built release ────────────────────────
+    info "Downloading agent from $RELEASE_URL..."
+    curl -fsSL "$RELEASE_URL" | tar -xz -C "$AGENT_DIR"
+
+  else
+    error "Cannot install agent: no source code found and RELEASE_URL is not set.
+  Option A — run install.sh from a git clone of the agent repo:
+      git clone <repo-url>
+      cd deploymate-agent
+      sudo bash scripts/install.sh
+  Option B — build a release tarball and pass its URL:
+      bash scripts/build-release.sh
+      # upload the .tar.gz, then:
+      sudo RELEASE_URL=https://<host>/deploymate-agent-<ver>.tar.gz bash install.sh"
+  fi
+
+  # Verify the entry point exists regardless of install mode
+  if [[ ! -f "$AGENT_DIR/dist/index.js" ]]; then
+    error "$AGENT_DIR/dist/index.js not found after install — something went wrong."
+  fi
+
+  chown -R "$AGENT_USER:$AGENT_USER" "$AGENT_DIR" "/tmp/deploymate-agent" "/var/log/$SERVICE_NAME"
+  info "Agent installed at $AGENT_DIR"
 }
 
 # ─────────────────────────────────────────────────────────────────────────
