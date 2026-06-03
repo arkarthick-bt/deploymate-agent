@@ -6,6 +6,7 @@ import { metricsCollector } from '@/metrics/metrics.collector';
 import { deploymentRunner } from '@/deployment/deployment.runner';
 import { cleanupService } from '@/cleanup/cleanup.service';
 import { handleDbJob } from '@/database/database.handler';
+import { handleSshJob } from '@/server/ssh.handler';
 import { assertDockerAvailable, getDockerVersion } from '@/docker/docker.client';
 import type { BackendMessage } from '@/communication/protocol.types';
 import fse from 'fs-extra';
@@ -82,6 +83,16 @@ async function bootstrap() {
         }).catch((err) => {
           logger.error({ err, jobId: msg.jobId }, 'DB job threw unexpectedly');
           wsClient.send({ type: 'db:result', jobId: msg.jobId, success: false, error: String(err) });
+        });
+        break;
+
+      case 'ssh:job':
+        logger.info({ jobId: msg.jobId, jobType: msg.jobType }, 'Received SSH job');
+        handleSshJob(msg.payload).then((result) => {
+          wsClient.send({ type: 'ssh:result', jobId: msg.jobId, success: result.success, error: result.error });
+        }).catch((err) => {
+          logger.error({ err, jobId: msg.jobId }, 'SSH job threw unexpectedly');
+          wsClient.send({ type: 'ssh:result', jobId: msg.jobId, success: false, error: String(err) });
         });
         break;
 

@@ -89,6 +89,12 @@ export type AgentMessage =
       success: boolean;
       data?: Record<string, unknown>;
       error?: string;
+    }
+  | {
+      type: 'ssh:result';
+      jobId: string;
+      success: boolean;
+      error?: string;
     };
 
 // ---------------------------------------------------------------------------
@@ -128,9 +134,23 @@ export interface DbJobPayload {
   targetSchema?: string;
 }
 
+// ---------------------------------------------------------------------------
+// SSH job types
+// ---------------------------------------------------------------------------
+
+export type SshJobType = 'CREATE_SSH_USER' | 'REVOKE_SSH_USER' | 'ROTATE_SSH_KEY';
+
+export interface SshJobPayload {
+  jobType: SshJobType;
+  linuxUsername: string;
+  publicKey?: string;
+  expiresAt?: string;
+}
+
 // Backend → Agent
 export type BackendMessage =
   | { type: 'deployment:dispatch'; job: DeploymentJob }
   | { type: 'deployment:rollback'; deploymentId: string; containerId: string }
   | { type: 'db:job'; jobId: string; jobType: DbJobType; payload: DbJobPayload }
+  | { type: 'ssh:job'; jobId: string; jobType: SshJobType; payload: SshJobPayload }
   | { type: 'ping' };
