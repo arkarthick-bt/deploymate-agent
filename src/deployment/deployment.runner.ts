@@ -6,7 +6,7 @@ import { gitService } from '@/git/git.service';
 import { frameworkDetector } from '@/framework/detector';
 import { generateDockerfile } from '@/framework/dockerfile.generator';
 import { buildImage, removeImage } from '@/docker/docker.builder';
-import { runContainer, stopContainer, findContainerByLabel } from '@/docker/docker.runtime';
+import { runContainer, stopContainer, findContainerByName } from '@/docker/docker.runtime';
 import { ensureNetwork, projectNetworkName } from '@/docker/docker.network';
 import { runHealthCheck } from '@/health/health.checker';
 import type { AgentMessage, DeploymentJob, DeploymentState } from '@/communication/protocol.types';
@@ -77,8 +77,8 @@ export class DeploymentRunner {
       const networkName = projectNetworkName(env.docker.networkPrefix, job.projectSlug);
       await ensureNetwork(networkName);
 
-      // 6. Stop previous container if exists
-      const existing = await findContainerByLabel('deploymate.project', job.projectSlug);
+      // 6. Stop previous container for this project+environment (same name would conflict)
+      const existing = await findContainerByName(containerName);
       if (existing) {
         log(`Stopping previous container: ${existing.Names[0]}`);
         await stopContainer(existing.Id);
@@ -95,6 +95,11 @@ export class DeploymentRunner {
         envVars: job.envVars,
         memoryMb: job.resourceLimits.memoryMb || 512,
         cpuCount: job.resourceLimits.cpuCount || 1,
+        labels: {
+          'deploymate.project': job.projectSlug,
+          'deploymate.environment': job.environment,
+          'deploymate.deployment': job.deploymentId,
+        },
       });
       log(`Container started: ${container.name}`);
 

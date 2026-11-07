@@ -13,6 +13,7 @@ export interface RunContainerOptions {
   envVars: Record<string, string>;
   memoryMb: number;
   cpuCount: number;
+  labels?: Record<string, string>;
 }
 
 export interface ContainerInfo {
@@ -31,6 +32,7 @@ export async function runContainer(opts: RunContainerOptions): Promise<Container
     envVars,
     memoryMb,
     cpuCount,
+    labels: extraLabels = {},
   } = opts;
 
   const labels = buildTraefikLabels({
@@ -46,7 +48,7 @@ export async function runContainer(opts: RunContainerOptions): Promise<Container
     name: containerName,
     Image: imageName,
     Env: envArray,
-    Labels: { ...labels, 'deploymate.container': 'true' },
+    Labels: { ...labels, ...extraLabels, 'deploymate.container': 'true' },
     ExposedPorts: { [`${port}/tcp`]: {} },
     HostConfig: {
       Memory: memoryMb * 1024 * 1024,
@@ -118,6 +120,18 @@ export async function findContainerByLabel(
   const containers = await docker.listContainers({
     all: true,
     filters: { label: [`${labelKey}=${labelValue}`] },
+  });
+  return containers[0];
+}
+
+export async function findContainerByName(
+  containerName: string,
+): Promise<Dockerode.ContainerInfo | undefined> {
+  const docker = getDockerClient();
+  // Docker's name filter is a regex match on "/<name>", so anchor it for an exact match
+  const containers = await docker.listContainers({
+    all: true,
+    filters: { name: [`^/${containerName}$`] },
   });
   return containers[0];
 }
